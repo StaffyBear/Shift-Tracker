@@ -1,24 +1,45 @@
-/* Tracker Starter (Supabase Sync) – app.js
-   - PWA + Supabase Auth + Postgres
-   - Cloud sync for: delivery rounds, exercises, workout sessions + sets
-   - Draft workout sets stored locally so you don't lose your in-progress entry
-*/
+/**************************************************
+ * Delivery Tracker – app.js
+ * Core: Vehicles + Mileage Logs (Supabase sync)
+ **************************************************/
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
+// ✅ Fill these in:
+const SITE_URL = "https://staffybear.github.io/Delivery-Tracker/"; // e.g. https://yourname.github.io/delivery-tracker/
 const SUPABASE_URL = "https://qntswiybgqijbbhpzpas.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_JW0SqP8JbZFsgVfpPevHrg__FeyrIgq";
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-});
+// Optional: invite code gate for registration
+const INVITE_CODE_REQUIRED = "1006";
 
+// Local storage keys
+const LS = { activeVehicleId: "dt_activeVehicleId_v1" };
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = (id) => document.getElementById(id);
 
-// ----- views -----
-const VIEWS = ["authView","menuView","deliveryView","workoutView","settingsView"];
+const VIEWS = ["authView", "resetView", "menuView", "vehiclesView", "mileageView"];
+let selectedDateStr = yyyyMmDd(new Date());
+
+// ---------- helpers ----------
+function pad2(n) { return String(n).padStart(2, "0"); }
+function yyyyMmDd(d = new Date()) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function todayStr() { return yyyyMmDd(new Date()); }
+
+function parseDateStr(dateStr) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  return new Date(y, m - 1, d, 12, 0, 0, 0);
+}
+function addDays(dateStr, delta) {
+  const dt = parseDateStr(dateStr);
+  dt.setDate(dt.getDate() + delta);
+  return yyyyMmDd(dt);
+}
+
 function showView(id, push = true) {
-  for (const v of VIEWS) $(v)?.classList.toggle("hidden", v !== id);
+  for (const v of VIEWS) {
+    const el = $(v);
+    if (el) el.classList.toggle("hidden", v !== id);
+  }
   if (push) history.pushState({ view: id }, "", "#" + id);
 }
 window.addEventListener("popstate", (e) => {
@@ -26,716 +47,463 @@ window.addEventListener("popstate", (e) => {
   if (VIEWS.includes(view)) showView(view, false);
 });
 
-// ----- date helpers -----
-function pad2(n) { return String(n).padStart(2, "0"); }
-function yyyyMmDd(d = new Date()) { return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`; }
-function parseDateStr(dateStr){
-  const [y,m,d] = dateStr.split("-").map(Number);
-  return new Date(y, m-1, d, 12, 0, 0, 0);
-}
-function addDays(dateStr, delta){
-  const dt = parseDateStr(dateStr);
-  dt.setDate(dt.getDate() + delta);
-  return yyyyMmDd(dt);
-}
-function nowTimeStr(){
-  const d = new Date();
-  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+function setAuthMsg(msg) { const el = $("authMsg"); if (el) el.textContent = msg || ""; }
+function setMileageMsg(msg) { const el = $("mileageMsg"); if (el) el.textContent = msg || ""; }
+function setVehicleMsg(msg) { const el = $("vehicleMsg"); if (el) el.textContent = msg || ""; }
+
+async function requireUser() {
+  const { data, error } = await sb.auth.getUser();
+  if (error || !data?.user) throw new Error("Not logged in.");
+  return data.user;
 }
 
-// ----- local storage (draft only + tiny cached exercises fallback) -----
-const KEYS = {
-  workoutDraft: "ts_workoutDraft_v1",
-  exercisesCache: "ts_exercises_cache_v1"
-};
-function loadLocal(key, fallback){
-  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
-  catch { return fallback; }
-}
-function saveLocal(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
-function uid(){ return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16); }
-
-// ----- auth helpers -----
-async function getUser(){
-  const { data } = await supabase.auth.getUser();
-  return data?.user ?? null;
-}
-function setAuthStatus(msg){ $("authStatus").textContent = msg || ""; }
-
-// =====================================================
-// DELIVERY ROUNDS (cloud)
-// =====================================================
-let deliveryDate = yyyyMmDd(new Date());
-
-function calcMiles(){
-  const s = Number(($("deliveryStartMiles")?.value || "").trim());
-  const e = Number(($("deliveryEndMiles")?.value || "").trim());
-  const ok = Number.isFinite(s) && Number.isFinite(e) && e >= s;
-  $("deliveryTotalMiles").value = ok ? (e - s).toFixed(1) : "";
+function numberOrNull(v) {
+  const n = Number(String(v ?? "").trim());
+  return Number.isFinite(n) ? n : null;
 }
 
-function clearDeliveryForm(){
-  $("deliveryStartMiles").value = "";
-  $("deliveryEndMiles").value = "";
-  $("deliveryTotalMiles").value = "";
-  $("deliveryDelivered").value = "";
-  $("deliveryCollected").value = "";
-  $("deliveryNotes").value = "";
+function setActiveVehicleId(id) {
+  if (id) localStorage.setItem(LS.activeVehicleId, id);
+  else localStorage.removeItem(LS.activeVehicleId);
+}
+function getActiveVehicleId() {
+  return localStorage.getItem(LS.activeVehicleId) || "";
 }
 
-async function fetchDeliveryRounds(){
-  const user = await getUser();
-  if (!user) return [];
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "T00:00:00");
+  const now = new Date();
+  d.setHours(12,0,0,0); now.setHours(12,0,0,0);
+  return Math.round((d - now) / 86400000);
+}
+function fmtDue(label, dateStr) {
+  if (!dateStr) return "";
+  const du = daysUntil(dateStr);
+  if (du === null) return "";
+  if (du < 0) return `⚠ ${label} overdue (${Math.abs(du)}d)`;
+  if (du <= 7) return `⚠ ${label} due in ${du}d`;
+  if (du <= 30) return `${label} due in ${du}d`;
+  return "";
+}
 
-  const { data, error } = await supabase
-    .from("delivery_rounds")
+// ---------- AUTH ----------
+async function doRegister() {
+  try {
+    const email = ($("email")?.value || "").trim();
+    const password = $("password")?.value || "";
+    const invite = ($("inviteCode")?.value || "").trim();
+
+    if (!email || !password) return setAuthMsg("Enter BOTH email and password.");
+    if (invite !== INVITE_CODE_REQUIRED) return setAuthMsg("Invite code required for registration.");
+
+    setAuthMsg("Registering…");
+    const res = await sb.auth.signUp({ email, password, options: { emailRedirectTo: SITE_URL } });
+    if (res.error) throw res.error;
+    setAuthMsg("Registered ✅ If email confirmation is enabled, confirm then login.");
+  } catch (err) {
+    setAuthMsg(err.message || String(err));
+  }
+}
+
+async function doLogin() {
+  try {
+    const email = ($("email")?.value || "").trim();
+    const password = $("password")?.value || "";
+    if (!email || !password) return setAuthMsg("Enter BOTH email and password.");
+
+    setAuthMsg("Logging in…");
+    const res = await sb.auth.signInWithPassword({ email, password });
+    if (res.error) throw res.error;
+
+    setAuthMsg("");
+    await loadVehiclesEverywhere();
+    showView("menuView");
+  } catch (err) {
+    setAuthMsg(err.message || String(err));
+  }
+}
+
+async function doForgotPassword() {
+  try {
+    const email = ($("email")?.value || "").trim();
+    if (!email) return setAuthMsg("Enter your email first.");
+
+    setAuthMsg("Sending reset email…");
+    const res = await sb.auth.resetPasswordForEmail(email, { redirectTo: SITE_URL });
+    if (res.error) throw res.error;
+
+    setAuthMsg("Reset email sent ✅ Check inbox/spam.");
+  } catch (err) {
+    setAuthMsg(err.message || String(err));
+  }
+}
+
+function isRecoveryLink() { return (location.hash || "").includes("type=recovery"); }
+
+async function setNewPassword() {
+  try {
+    const p1 = $("newPassword")?.value || "";
+    const p2 = $("newPassword2")?.value || "";
+    if (!p1 || p1.length < 6) return ($("resetMsg").textContent = "Password must be at least 6 characters.");
+    if (p1 !== p2) return ($("resetMsg").textContent = "Passwords do not match.");
+
+    $("resetMsg").textContent = "Updating password…";
+    const res = await sb.auth.updateUser({ password: p1 });
+    if (res.error) throw res.error;
+
+    $("resetMsg").textContent = "Password updated ✅ Please login.";
+    history.replaceState(null, "", location.pathname + location.search);
+    await sb.auth.signOut();
+    showView("authView");
+  } catch (err) {
+    $("resetMsg").textContent = err.message || String(err);
+  }
+}
+
+async function doLogout() {
+  await sb.auth.signOut();
+  showView("authView");
+}
+
+// ---------- VEHICLES ----------
+async function fetchVehicles() {
+  const user = await requireUser();
+  const res = await sb.from("vehicles")
     .select("*")
     .eq("user_id", user.id)
-    .eq("date", deliveryDate)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    console.error(error);
-    alert("Failed to load delivery rounds from the cloud.");
-    return [];
-  }
-  return data || [];
+    .order("created_at", { ascending: true });
+  if (res.error) throw res.error;
+  return res.data || [];
 }
 
-async function saveDeliveryRound(){
-  const user = await getUser();
-  if (!user) return alert("You are signed out. Please sign in again.");
+async function loadVehiclesEverywhere() {
+  let vehicles = [];
+  try { vehicles = await fetchVehicles(); }
+  catch (err) { console.error(err); vehicles = []; }
 
-  const startMiles = Number(($("deliveryStartMiles").value || "").trim());
-  const endMiles = Number(($("deliveryEndMiles").value || "").trim());
-  const delivered = Number(($("deliveryDelivered").value || "0").trim());
-  const collected = Number(($("deliveryCollected").value || "0").trim());
-  const notes = ($("deliveryNotes").value || "").trim() || null;
-
-  if (!Number.isFinite(startMiles) || !Number.isFinite(endMiles)) return alert("Enter valid start + end mileage.");
-  if (endMiles < startMiles) return alert("End mileage must be >= start mileage.");
-  if (!Number.isFinite(delivered) || delivered < 0) return alert("Delivered must be 0 or more.");
-  if (!Number.isFinite(collected) || collected < 0) return alert("Collected must be 0 or more.");
-
-  const totalMiles = Number((endMiles - startMiles).toFixed(1));
-
-  const { error } = await supabase.from("delivery_rounds").insert([{
-    user_id: user.id,
-    date: deliveryDate,
-    start_miles: startMiles,
-    end_miles: endMiles,
-    total_miles: totalMiles,
-    delivered,
-    collected,
-    notes
-  }]);
-
-  if (error) {
-    console.error(error);
-    alert("Failed to save. Check your Supabase URL/key + RLS policies.");
-    return;
+  // fill both selects
+  for (const sid of ["activeVehicleSelect", "mileageVehicleSelect"]) {
+    const sel = $(sid);
+    if (!sel) continue;
+    sel.innerHTML = vehicles.length
+      ? vehicles.map(v => `<option value="${v.id}">${v.registration}</option>`).join("")
+      : `<option value="">No vehicles yet</option>`;
   }
 
-  clearDeliveryForm();
-  await renderDeliveryRounds();
-}
+  // pick active
+  let active = getActiveVehicleId();
+  if (!vehicles.find(v => v.id === active)) active = vehicles[0]?.id || "";
+  setActiveVehicleId(active);
 
-async function deleteDeliveryRound(id){
-  const user = await getUser();
-  if (!user) return;
+  if ($("activeVehicleSelect")) $("activeVehicleSelect").value = active || "";
+  if ($("mileageVehicleSelect")) $("mileageVehicleSelect").value = active || "";
 
-  const { error } = await supabase
-    .from("delivery_rounds")
-    .delete()
-    .eq("id", id)
-    .eq("user_id", user.id);
-
-  if (error) {
-    console.error(error);
-    alert("Failed to delete.");
-    return;
-  }
-  await renderDeliveryRounds();
-}
-
-async function renderDeliveryRounds(){
-  const list = $("deliveryList");
-  const empty = $("deliveryEmptyMsg");
-
-  list.innerHTML = "";
-  empty.textContent = "Loading...";
-  const rounds = await fetchDeliveryRounds();
-
-  if (!rounds.length){
-    empty.textContent = "No rounds saved for this date yet.";
-    return;
-  }
-  empty.textContent = "";
-
-  for (const r of rounds){
-    const li = document.createElement("li");
-    const notes = r.notes ? ` • ${r.notes}` : "";
-    li.innerHTML = `
-      <b>${Number(r.total_miles).toFixed(1)} mi</b> • ${r.start_miles} → ${r.end_miles}
-      • Delivered: ${r.delivered} • Collected: ${r.collected}${notes}
-      <button class="secondary miniInlineBtn" data-del-id="${r.id}" type="button">Delete</button>
-    `;
-    list.appendChild(li);
-  }
-
-  list.querySelectorAll("[data-del-id]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const id = btn.getAttribute("data-del-id");
-      if (confirm("Delete this round?")) await deleteDeliveryRound(id);
-    });
-  });
-}
-
-function wireDeliveryDateBar(){
-  $("deliveryDatePicker").value = deliveryDate;
-  $("deliveryPrev").onclick = async () => { deliveryDate = addDays(deliveryDate, -1); await syncDeliveryDate(); };
-  $("deliveryNext").onclick = async () => { deliveryDate = addDays(deliveryDate, +1); await syncDeliveryDate(); };
-  $("deliveryDatePicker").onchange = async (e) => { deliveryDate = e.target.value; await syncDeliveryDate(); };
-}
-async function syncDeliveryDate(){
-  $("deliveryDatePicker").value = deliveryDate;
-  await renderDeliveryRounds();
-}
-
-// =====================================================
-// WORKOUT (cloud + local draft)
-// =====================================================
-let workoutDate  = yyyyMmDd(new Date());
-
-function getWorkoutDraft(){
-  return loadLocal(KEYS.workoutDraft, {
-    date: workoutDate,
-    startTime: "",
-    endTime: "",
-    units: "kg",
-    sets: [] // {id,exercise,setNo,reps,weight}
-  });
-}
-function setWorkoutDraft(draft){
-  saveLocal(KEYS.workoutDraft, draft);
-}
-function clearWorkoutSetInputs(){
-  $("reps").value = "";
-  $("weight").value = "";
-  $("setNumber").value = "1";
-}
-
-async function fetchExercises(){
-  const user = await getUser();
-  if (!user) return [];
-
-  const { data, error } = await supabase
-    .from("exercises")
-    .select("name")
-    .eq("user_id", user.id)
-    .order("name", { ascending: true });
-
-  if (error){
-    console.error(error);
-    // fallback to cache
-    return loadLocal(KEYS.exercisesCache, []);
-  }
-
-  const list = (data || []).map(x => x.name).filter(Boolean);
-  saveLocal(KEYS.exercisesCache, list);
-  return list;
-}
-
-async function ensureDefaultExercisesIfEmpty(){
-  const user = await getUser();
-  if (!user) return;
-
-  const current = await fetchExercises();
-  if (current.length) return;
-
-  const defaults = ["Bench Press","Squat","Deadlift","Overhead Press","Pull-Up","Row","Bicep Curl","Tricep Extension"];
-  const rows = defaults.map(name => ({ user_id: user.id, name }));
-
-  // ignore unique conflicts etc
-  await supabase.from("exercises").insert(rows);
-}
-
-async function renderExerciseSelect(){
-  await ensureDefaultExercisesIfEmpty();
-  const sel = $("exerciseSelect");
-  const ex = await fetchExercises();
-
-  sel.innerHTML = ex.map(name => `<option>${name}</option>`).join("");
-}
-
-function renderSetNumberSelect(){
-  const sel = $("setNumber");
-  sel.innerHTML = Array.from({length: 12}, (_,i)=>`<option value="${i+1}">${i+1}</option>`).join("");
-  sel.value = "1";
-}
-
-async function addExercise(){
-  const user = await getUser();
-  if (!user) return alert("You are signed out. Please sign in again.");
-
-  const name = ($("newExerciseName").value || "").trim();
-  if (!name) return alert("Enter an exercise name first.");
-
-  const { error } = await supabase.from("exercises").insert([{ user_id: user.id, name }]);
-  if (error && !String(error.message || "").toLowerCase().includes("duplicate")) {
-    console.error(error);
-    alert("Failed to add exercise.");
-    return;
-  }
-
-  $("newExerciseName").value = "";
-  await renderExerciseSelect();
-  $("exerciseSelect").value = name;
-}
-
-function addSet(){
-  const draft = getWorkoutDraft();
-
-  const exercise = $("exerciseSelect").value;
-  const setNo = Number($("setNumber").value || "1");
-  const reps = Number(($("reps").value || "").trim());
-  const weight = Number(($("weight").value || "").trim());
-  const units = $("workoutUnits").value;
-
-  if (!exercise) return alert("Pick an exercise.");
-  if (!Number.isFinite(setNo) || setNo < 1) return alert("Set number must be 1+.");
-  if (!Number.isFinite(reps) || reps < 1) return alert("Reps must be 1+.");
-  if (!Number.isFinite(weight) || weight < 0) return alert("Weight must be 0+.");
-
-  draft.units = units;
-  draft.sets.push({ id: uid(), exercise, setNo, reps, weight });
-  setWorkoutDraft(draft);
-
-  clearWorkoutSetInputs();
-  renderWorkoutDraft();
-}
-
-function deleteDraftSet(id){
-  const draft = getWorkoutDraft();
-  draft.sets = (draft.sets || []).filter(s => s.id !== id);
-  setWorkoutDraft(draft);
-  renderWorkoutDraft();
-}
-
-function renderWorkoutDraft(){
-  const draft = getWorkoutDraft();
-
-  draft.date = workoutDate;
-  setWorkoutDraft(draft);
-
-  $("workoutStartTime").value = draft.startTime || "";
-  $("workoutEndTime").value = draft.endTime || "";
-  $("workoutUnits").value = draft.units || "kg";
-
-  const list = $("workoutSetList");
-  const empty = $("workoutSetEmptyMsg");
-  list.innerHTML = "";
-
-  const sets = (draft.sets || []).slice().sort((a,b)=>{
-    if (a.exercise !== b.exercise) return a.exercise.localeCompare(b.exercise);
-    return a.setNo - b.setNo;
-  });
-
-  if (!sets.length){
-    empty.textContent = "No sets added yet.";
-  }else{
-    empty.textContent = "";
-    for (const s of sets){
-      const li = document.createElement("li");
-      li.innerHTML = `<b>${s.exercise}</b> • Set ${s.setNo} • ${s.reps} reps • ${s.weight} ${draft.units}
-        <button class="secondary miniInlineBtn" data-set-id="${s.id}" type="button">Delete</button>`;
-      list.appendChild(li);
+  // due warnings
+  const dueBox = $("dueWarnings");
+  if (dueBox) {
+    const v = vehicles.find(x => x.id === active);
+    if (!v) dueBox.textContent = "Add a vehicle to start logging mileage.";
+    else {
+      const msgs = [fmtDue("MOT", v.mot_due_date), fmtDue("Tax", v.tax_due_date)].filter(Boolean);
+      dueBox.textContent = msgs.length ? msgs.join(" • ") : "No upcoming due dates in the next 30 days.";
     }
-    list.querySelectorAll("[data-set-id]").forEach(btn => {
-      btn.addEventListener("click", () => deleteDraftSet(btn.getAttribute("data-set-id")));
-    });
+  }
+
+  renderVehicleList(vehicles);
+}
+
+function clearVehicleForm() {
+  $("vehicleId").value = "";
+  $("registration").value = "";
+  $("motDue").value = "";
+  $("taxDue").value = "";
+  setVehicleMsg("");
+}
+
+async function saveVehicle() {
+  try {
+    const user = await requireUser();
+    const id = ($("vehicleId").value || "").trim();
+    const registration = ($("registration").value || "").trim().toUpperCase();
+    const mot_due_date = $("motDue").value || null;
+    const tax_due_date = $("taxDue").value || null;
+
+    if (!registration) return alert("Registration is required.");
+    setVehicleMsg("Saving…");
+
+    if (id) {
+      const res = await sb.from("vehicles")
+        .update({ registration, mot_due_date, tax_due_date })
+        .eq("id", id)
+        .eq("user_id", user.id);
+      if (res.error) throw res.error;
+    } else {
+      const res = await sb.from("vehicles")
+        .insert({ user_id: user.id, registration, mot_due_date, tax_due_date });
+      if (res.error) throw res.error;
+    }
+
+    setVehicleMsg("Saved ✅");
+    clearVehicleForm();
+    await loadVehiclesEverywhere();
+  } catch (err) {
+    console.error(err);
+    setVehicleMsg(err.message || String(err));
   }
 }
 
-function workoutStartNow(){
-  const t = nowTimeStr();
-  $("workoutStartTime").value = t;
-  const draft = getWorkoutDraft();
-  draft.startTime = t;
-  setWorkoutDraft(draft);
-}
-function workoutEndNow(){
-  const t = nowTimeStr();
-  $("workoutEndTime").value = t;
-  const draft = getWorkoutDraft();
-  draft.endTime = t;
-  setWorkoutDraft(draft);
-}
+function renderVehicleList(vehicles) {
+  const ul = $("vehicleList");
+  if (!ul) return;
 
-async function fetchWorkoutSessionsWithSets(){
-  const user = await getUser();
-  if (!user) return [];
+  ul.innerHTML = "";
+  if (!vehicles.length) { setVehicleMsg("No vehicles yet."); return; }
 
-  const { data: sessions, error: sErr } = await supabase
-    .from("workout_sessions")
-    .select("*")
-    .eq("user_id", user.id)
-    .eq("date", workoutDate)
-    .order("created_at", { ascending: false });
-
-  if (sErr){
-    console.error(sErr);
-    alert("Failed to load workout sessions.");
-    return [];
-  }
-
-  const ids = (sessions || []).map(s => s.id);
-  if (!ids.length) return sessions || [];
-
-  const { data: sets, error: setErr } = await supabase
-    .from("workout_sets")
-    .select("*")
-    .eq("user_id", user.id)
-    .in("session_id", ids);
-
-  if (setErr){
-    console.error(setErr);
-    alert("Failed to load workout sets.");
-    return sessions || [];
-  }
-
-  const bySession = new Map(ids.map(id => [id, []]));
-  (sets || []).forEach(x => bySession.get(x.session_id)?.push(x));
-
-  return (sessions || []).map(s => ({ ...s, sets: bySession.get(s.id) || [] }));
-}
-
-async function renderWorkoutSessions(){
-  const list = $("workoutSessionList");
-  const empty = $("workoutEmptyMsg");
-  list.innerHTML = "";
-  empty.textContent = "Loading...";
-
-  const sessions = await fetchWorkoutSessionsWithSets();
-
-  if (!sessions.length){
-    empty.textContent = "No sessions saved for this date yet.";
-    return;
-  }
-  empty.textContent = "";
-
-  for (const s of sessions){
-    const totalSets = (s.sets || []).length;
-    const end = s.end_time ? `–${String(s.end_time).slice(0,5)}` : "";
+  for (const v of vehicles) {
     const li = document.createElement("li");
     li.innerHTML = `
-      <b>${String(s.start_time).slice(0,5)}${end}</b> • ${totalSets} sets • Units: ${s.units}
-      <button class="secondary miniInlineBtn" data-sesh-id="${s.id}" type="button">Delete</button>
+      <b>${v.registration}</b>
+      ${v.mot_due_date ? ` • MOT: ${v.mot_due_date}` : ""}
+      ${v.tax_due_date ? ` • Tax: ${v.tax_due_date}` : ""}
+      <button class="secondary miniInlineBtn" data-edit="${v.id}" type="button">Edit</button>
+      <button class="secondary miniInlineBtn" data-del="${v.id}" type="button">Delete</button>
     `;
-    list.appendChild(li);
+    ul.appendChild(li);
   }
 
-  list.querySelectorAll("[data-sesh-id]").forEach(btn => {
+  ul.querySelectorAll("[data-edit]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-edit");
+      const v = vehicles.find(x => x.id === id);
+      if (!v) return;
+      $("vehicleId").value = v.id;
+      $("registration").value = v.registration || "";
+      $("motDue").value = v.mot_due_date || "";
+      $("taxDue").value = v.tax_due_date || "";
+      setVehicleMsg("Editing…");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
+
+  ul.querySelectorAll("[data-del]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const id = btn.getAttribute("data-sesh-id");
-      if (confirm("Delete this saved session?")) await deleteWorkoutSession(id);
+      const id = btn.getAttribute("data-del");
+      const v = vehicles.find(x => x.id === id);
+      if (!v) return;
+
+      if (!confirm(`Delete vehicle ${v.registration}?\n\nIf you have mileage logs for it, deletion may be blocked (on delete restrict).`)) return;
+
+      try {
+        const user = await requireUser();
+        const res = await sb.from("vehicles").delete().eq("id", id).eq("user_id", user.id);
+        if (res.error) throw res.error;
+
+        if (getActiveVehicleId() === id) setActiveVehicleId("");
+        await loadVehiclesEverywhere();
+        setVehicleMsg("Deleted ✅");
+      } catch (err) {
+        console.error(err);
+        setVehicleMsg(err.message || String(err));
+      }
     });
   });
 }
 
-async function saveWorkoutSession(){
-  const user = await getUser();
-  if (!user) return alert("You are signed out. Please sign in again.");
+// ---------- MILEAGE ----------
+function calcMileageTotal() {
+  const s = numberOrNull($("mileageStart").value);
+  const e = numberOrNull($("mileageEnd").value);
+  if (s === null || e === null || e < s) { $("mileageTotal").value = ""; return null; }
+  const t = Number((e - s).toFixed(1));
+  $("mileageTotal").value = String(t);
+  return t;
+}
 
-  const draft = getWorkoutDraft();
-  draft.startTime = $("workoutStartTime").value || "";
-  draft.endTime = $("workoutEndTime").value || "";
-  draft.units = $("workoutUnits").value || "kg";
+function setDate(newDate) {
+  if (newDate > todayStr()) newDate = todayStr();
+  selectedDateStr = newDate;
+  syncMileageDatePicker();
+  loadMileageForDate().catch(console.error);
+}
 
-  if (!draft.startTime) return alert("Add a start time (or press Start session).");
-  if ((draft.sets || []).length === 0) return alert("Add at least one set.");
-  if (draft.endTime && draft.endTime < draft.startTime) return alert("End time must be after start time.");
+function syncMileageDatePicker() {
+  const p = $("mileageDatePicker");
+  if (!p) return;
+  p.max = todayStr();
+  p.value = selectedDateStr;
+  $("mileageNext").disabled = (selectedDateStr >= todayStr());
+}
 
-  // 1) create session
-  const { data: session, error: sErr } = await supabase
-    .from("workout_sessions")
-    .insert([{
+async function upsertMileage() {
+  try {
+    const user = await requireUser();
+    const vehicle_id = $("mileageVehicleSelect").value;
+    if (!vehicle_id) return alert("Please add/select a vehicle first.");
+
+    const mileage_start = numberOrNull($("mileageStart").value);
+    const mileage_end = numberOrNull($("mileageEnd").value);
+    const mileage_total = calcMileageTotal();
+    const notes = ($("mileageNotes").value || "").trim() || null;
+
+    if (mileage_start === null || mileage_end === null) return alert("Enter valid start + end mileage.");
+    if (mileage_total === null) return alert("End mileage must be >= start mileage.");
+
+    setMileageMsg("Saving…");
+
+    const res = await sb.from("mileage_logs").upsert([{
       user_id: user.id,
-      date: workoutDate,
-      start_time: draft.startTime,
-      end_time: draft.endTime || null,
-      units: draft.units
-    }])
-    .select()
-    .single();
+      vehicle_id,
+      date: selectedDateStr,
+      mileage_start,
+      mileage_end,
+      mileage_total,
+      notes
+    }], { onConflict: "user_id,vehicle_id,date" });
 
-  if (sErr){
-    console.error(sErr);
-    alert("Failed to save session.");
-    return;
+    if (res.error) throw res.error;
+
+    setMileageMsg("Saved ✅");
+    await loadMileageForDate();
+  } catch (err) {
+    console.error(err);
+    setMileageMsg(err.message || String(err));
+  }
+}
+
+async function deleteMileageForSelection() {
+  try {
+    const user = await requireUser();
+    const vehicle_id = $("mileageVehicleSelect").value;
+    if (!vehicle_id) return;
+    if (!confirm("Delete mileage entry for this vehicle + date?")) return;
+
+    const res = await sb.from("mileage_logs")
+      .delete()
+      .eq("user_id", user.id)
+      .eq("vehicle_id", vehicle_id)
+      .eq("date", selectedDateStr);
+
+    if (res.error) throw res.error;
+
+    $("mileageStart").value = "";
+    $("mileageEnd").value = "";
+    $("mileageTotal").value = "";
+    $("mileageNotes").value = "";
+    setMileageMsg("Deleted ✅");
+    await loadMileageForDate();
+  } catch (err) {
+    console.error(err);
+    setMileageMsg(err.message || String(err));
+  }
+}
+
+async function loadMileageForDate() {
+  const ul = $("mileageList");
+  if (!ul) return;
+
+  setMileageMsg("Loading…");
+  const user = await requireUser();
+  const vehicle_id = $("mileageVehicleSelect").value || "";
+
+  const res = await sb.from("mileage_logs")
+    .select("vehicle_id,date,mileage_start,mileage_end,mileage_total,notes,created_at,vehicles(registration)")
+    .eq("user_id", user.id)
+    .eq("date", selectedDateStr)
+    .order("created_at", { ascending: false });
+
+  if (res.error) throw res.error;
+  const rows = res.data || [];
+
+  // Fill form from selected vehicle entry if it exists
+  const current = rows.find(r => r.vehicle_id === vehicle_id);
+  if (current) {
+    $("mileageStart").value = current.mileage_start ?? "";
+    $("mileageEnd").value = current.mileage_end ?? "";
+    $("mileageTotal").value = current.mileage_total ?? "";
+    $("mileageNotes").value = current.notes ?? "";
+  } else {
+    $("mileageStart").value = "";
+    $("mileageEnd").value = "";
+    $("mileageTotal").value = "";
+    $("mileageNotes").value = "";
   }
 
-  // 2) create sets
-  const rows = (draft.sets || []).map(s => ({
-    user_id: user.id,
-    session_id: session.id,
-    exercise: s.exercise,
-    set_no: s.setNo,
-    reps: s.reps,
-    weight: s.weight
-  }));
+  ul.innerHTML = "";
+  if (!rows.length) { setMileageMsg("No logs saved for this date yet."); return; }
 
-  const { error: setErr } = await supabase.from("workout_sets").insert(rows);
-  if (setErr){
-    console.error(setErr);
-    alert("Session saved, but sets failed. (You can delete and re-save.)");
+  setMileageMsg("");
+  for (const r of rows) {
+    const reg = r.vehicles?.registration || "Vehicle";
+    const notes = r.notes ? ` • ${r.notes}` : "";
+    const li = document.createElement("li");
+    li.innerHTML = `<b>${reg}</b> • ${r.mileage_start} → ${r.mileage_end} • <b>${Number(r.mileage_total).toFixed(1)} mi</b>${notes}`;
+    ul.appendChild(li);
   }
-
-  // reset draft
-  saveLocal(KEYS.workoutDraft, { date: workoutDate, startTime: "", endTime: "", units: draft.units, sets: [] });
-  renderWorkoutDraft();
-  await renderWorkoutSessions();
 }
 
-function discardWorkoutSession(){
-  if (!confirm("Discard current session draft?")) return;
-  saveLocal(KEYS.workoutDraft, { date: workoutDate, startTime: "", endTime: "", units: $("workoutUnits").value || "kg", sets: [] });
-  renderWorkoutDraft();
-}
-
-async function deleteWorkoutSession(id){
-  const user = await getUser();
-  if (!user) return;
-
-  // sets are cascade-deleted by FK
-  const { error } = await supabase
-    .from("workout_sessions")
-    .delete()
-    .eq("id", id)
-    .eq("user_id", user.id);
-
-  if (error){
-    console.error(error);
-    alert("Failed to delete session.");
-    return;
-  }
-  await renderWorkoutSessions();
-}
-
-// date bar
-function wireWorkoutDateBar(){
-  $("workoutDatePicker").value = workoutDate;
-  $("workoutPrev").onclick = async () => { workoutDate = addDays(workoutDate, -1); await syncWorkoutDate(); };
-  $("workoutNext").onclick = async () => { workoutDate = addDays(workoutDate, +1); await syncWorkoutDate(); };
-  $("workoutDatePicker").onchange = async (e) => { workoutDate = e.target.value; await syncWorkoutDate(); };
-}
-async function syncWorkoutDate(){
-  $("workoutDatePicker").value = workoutDate;
-
-  // keep draft per-date (simple approach: reset on date switch)
-  const draft = getWorkoutDraft();
-  saveLocal(KEYS.workoutDraft, { date: workoutDate, startTime: "", endTime: "", units: draft.units || "kg", sets: [] });
-
-  renderWorkoutDraft();
-  await renderWorkoutSessions();
-}
-
-// =====================================================
-// SETTINGS / EXPORT
-// =====================================================
-async function exportData(){
-  const user = await getUser();
-  if (!user) return alert("Signed out.");
-
-  const { data: rounds } = await supabase.from("delivery_rounds").select("*").eq("user_id", user.id);
-  const { data: exercises } = await supabase.from("exercises").select("*").eq("user_id", user.id);
-  const { data: sessions } = await supabase.from("workout_sessions").select("*").eq("user_id", user.id);
-  const { data: sets } = await supabase.from("workout_sets").select("*").eq("user_id", user.id);
-
-  const payload = { exportedAt: new Date().toISOString(), rounds, exercises, sessions, sets };
-
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `tracker-export-${yyyyMmDd(new Date())}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-async function refreshFromCloud(){
-  await renderDeliveryRounds();
-  await renderExerciseSelect();
-  renderWorkoutDraft();
-  await renderWorkoutSessions();
-  alert("Refreshed ✅");
-}
-
-// =====================================================
-// AUTH UI
-// =====================================================
-async function signIn(){
-  setAuthStatus("Signing in...");
-  const email = ($("authEmail").value || "").trim();
-  const password = $("authPassword").value || "";
-
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error){
-    console.error(error);
-    setAuthStatus(error.message || "Sign in failed.");
-    return;
-  }
-  setAuthStatus("");
-}
-
-async function signUp(){
-  setAuthStatus("Creating account...");
-  const email = ($("authEmail").value || "").trim();
-  const password = $("authPassword").value || "";
-
-  const { error } = await supabase.auth.signUp({ email, password });
-  if (error){
-    console.error(error);
-    setAuthStatus(error.message || "Sign up failed.");
-    return;
-  }
-  setAuthStatus("Account created ✅ If email confirmation is enabled, check your inbox.");
-}
-
-async function resetPassword(){
-  const email = ($("authEmail").value || "").trim();
-  if (!email) return setAuthStatus("Enter your email first.");
-  setAuthStatus("Sending reset email...");
-  const { error } = await supabase.auth.resetPasswordForEmail(email);
-  if (error){
-    console.error(error);
-    setAuthStatus(error.message || "Failed to send reset email.");
-    return;
-  }
-  setAuthStatus("Reset email sent ✅");
-}
-
-async function signOut(){
-  await supabase.auth.signOut();
-}
-
-// =====================================================
-// INIT + NAV
-// =====================================================
-function wireNav(){
-  $("goDelivery").onclick = async () => { showView("deliveryView"); await syncDeliveryDate(); };
-  $("goWorkout").onclick = async () => { showView("workoutView"); await syncWorkoutDate(); };
-  $("goSettings").onclick = () => { showView("settingsView"); };
-
-  $("deliveryBack").onclick = () => showView("menuView");
-  $("workoutBack").onclick = () => showView("menuView");
-  $("settingsBack").onclick = () => showView("menuView");
-}
-
-function wireDelivery(){
-  wireDeliveryDateBar();
-  $("deliveryStartMiles").addEventListener("input", calcMiles);
-  $("deliveryEndMiles").addEventListener("input", calcMiles);
-  $("btnSaveDelivery").onclick = saveDeliveryRound;
-  $("btnClearDeliveryForm").onclick = clearDeliveryForm;
-}
-
-function wireWorkout(){
-  wireWorkoutDateBar();
-  renderSetNumberSelect();
-
-  $("btnAddExercise").onclick = addExercise;
-  $("btnAddSet").onclick = addSet;
-  $("btnClearWorkoutForm").onclick = clearWorkoutSetInputs;
-
-  $("btnWorkoutStart").onclick = workoutStartNow;
-  $("btnWorkoutEnd").onclick = workoutEndNow;
-
-  $("workoutStartTime").addEventListener("change", () => {
-    const d = getWorkoutDraft(); d.startTime = $("workoutStartTime").value || ""; setWorkoutDraft(d);
-  });
-  $("workoutEndTime").addEventListener("change", () => {
-    const d = getWorkoutDraft(); d.endTime = $("workoutEndTime").value || ""; setWorkoutDraft(d);
-  });
-  $("workoutUnits").addEventListener("change", () => {
-    const d = getWorkoutDraft(); d.units = $("workoutUnits").value || "kg"; setWorkoutDraft(d); renderWorkoutDraft();
-  });
-
-  $("btnSaveWorkoutSession").onclick = saveWorkoutSession;
-  $("btnDiscardWorkoutSession").onclick = discardWorkoutSession;
-}
-
-function wireSettings(){
-  $("btnExportData").onclick = exportData;
-  $("btnRefreshCloud").onclick = refreshFromCloud;
-  $("btnSignOut").onclick = signOut;
-}
-
-// mini inline delete buttons inside list items
-(function injectMiniInlineBtnCSS(){
+// ---------- init ----------
+(function injectMiniInlineBtnCSS() {
   const s = document.createElement("style");
-  s.textContent = `
-    .miniInlineBtn{
-      margin-left: 10px;
-      width: auto !important;
-      display: inline-block !important;
-      padding: 0 12px !important;
-      height: 34px !important;
-      border-radius: 999px !important;
-      font-weight: 900 !important;
-      vertical-align: middle;
-    }
-  `;
+  s.textContent = `.miniInlineBtn{margin-left:10px;width:auto!important;display:inline-block!important;padding:0 12px!important;height:34px!important;border-radius:999px!important;font-weight:900!important;vertical-align:middle;}`;
   document.head.appendChild(s);
 })();
 
-async function onSignedIn(user){
-  $("whoAmI").textContent = `Signed in as ${user.email || user.id}`;
-  $("settingsEmail").textContent = user.email || user.id;
+async function init() {
+  // auth
+  $("btnLogin").onclick = doLogin;
+  $("btnRegister").onclick = doRegister;
+  $("btnForgot").onclick = doForgotPassword;
+  $("btnSetNewPassword").onclick = setNewPassword;
 
-  // set module dates
-  deliveryDate = yyyyMmDd(new Date());
-  workoutDate = yyyyMmDd(new Date());
+  // menu
+  $("btnLogout").onclick = doLogout;
+  $("goMileage").onclick = async () => { showView("mileageView"); await loadVehiclesEverywhere(); syncMileageDatePicker(); await loadMileageForDate(); };
+  $("goVehicles").onclick = async () => { showView("vehiclesView"); await loadVehiclesEverywhere(); };
+  $("btnManageVehicles").onclick = async () => { showView("vehiclesView"); await loadVehiclesEverywhere(); };
 
-  $("deliveryDatePicker").value = deliveryDate;
-  $("workoutDatePicker").value = workoutDate;
+  // back buttons
+  $("vehiclesBack").onclick = () => showView("menuView");
+  $("mileageBack").onclick = () => showView("menuView");
 
-  await renderExerciseSelect();
-  await renderDeliveryRounds();
-  renderWorkoutDraft();
-  await renderWorkoutSessions();
+  // vehicles actions
+  $("btnSaveVehicle").onclick = saveVehicle;
+  $("btnClearVehicle").onclick = clearVehicleForm;
 
-  showView("menuView", false);
+  // vehicle selects
+  $("activeVehicleSelect").onchange = async (e) => {
+    setActiveVehicleId(e.target.value);
+    await loadVehiclesEverywhere();
+  };
+  $("mileageVehicleSelect").onchange = async (e) => {
+    setActiveVehicleId(e.target.value);
+    $("activeVehicleSelect").value = e.target.value;
+    await loadVehiclesEverywhere();
+    await loadMileageForDate();
+  };
+
+  // mileage date bar
+  $("mileagePrev").onclick = () => setDate(addDays(selectedDateStr, -1));
+  $("mileageNext").onclick = () => setDate(addDays(selectedDateStr, +1));
+  $("mileageDatePicker").onchange = (e) => setDate(e.target.value);
+
+  // mileage actions
+  $("mileageStart").addEventListener("input", calcMileageTotal);
+  $("mileageEnd").addEventListener("input", calcMileageTotal);
+  $("btnSaveMileage").onclick = upsertMileage;
+  $("btnDeleteMileage").onclick = deleteMileageForSelection;
+
+  // initial view
+  if (isRecoveryLink()) {
+    showView("resetView", false);
+  } else {
+    const s = await sb.auth.getSession();
+    showView(s.data?.session ? "menuView" : "authView", false);
+    if (s.data?.session) await loadVehiclesEverywhere();
+  }
+
+  selectedDateStr = todayStr();
+  syncMileageDatePicker();
 }
 
-async function onSignedOut(){
-  $("whoAmI").textContent = "";
-  $("settingsEmail").textContent = "";
-  showView("authView", false);
-}
-
-async function init(){
-  wireNav();
-  wireDelivery();
-  wireWorkout();
-  wireSettings();
-
-  $("btnSignIn").onclick = signIn;
-  $("btnSignUp").onclick = signUp;
-  $("btnResetPassword").onclick = resetPassword;
-
-  // session bootstrap
-  const { data: { session } } = await supabase.auth.getSession();
-  if (session?.user) await onSignedIn(session.user);
-  else await onSignedOut();
-
-  // keep UI in sync with auth state
-  supabase.auth.onAuthStateChange(async (_event, session2) => {
-    if (session2?.user) await onSignedIn(session2.user);
-    else await onSignedOut();
-  });
-}
-
-init();
+init().catch((e) => { console.error(e); alert(e.message || String(e)); });
