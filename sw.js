@@ -1,5 +1,6 @@
 // sw.js — offline shell cache (starter)
-const CACHE_NAME = "tracker-starter-supabase-v1";
+const CACHE_NAME = "delivery-tracker-v1";
+
 const ASSETS = [
   "./",
   "./index.html",
