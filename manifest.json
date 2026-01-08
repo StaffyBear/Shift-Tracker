@@ -1,10 +1,10 @@
 {
-  "name": "Delivery Tracker",
-  "short_name": "Delivery",
+  "name": "Shift Tracker",
+  "short_name": "Hours",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0f6f4f",
-  "theme_color": "#0f6f4f",
+  "background_color": "#1FA8A8",
+  "theme_color": "#1FA8A8",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
