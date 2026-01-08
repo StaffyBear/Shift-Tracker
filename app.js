@@ -1,510 +1,222 @@
-/**************************************************
- * Delivery Tracker – app.js
- * Core: Vehicles + Mileage Logs (Supabase sync)
- **************************************************/
-
-// ✅ Fill these in:
-const SITE_URL = "https://staffybear.github.io/Delivery-Tracker/";
-const SUPABASE_URL = "https://qntswiybgqijbbhpzpas.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_JW0SqP8JbZFsgVfpPevHrg__FeyrIgq";
-
-// Optional: invite code gate for registration
-const INVITE_CODE_REQUIRED = "1006";
-
-// Local storage keys
-const LS = { activeVehicleId: "dt_activeVehicleId_v1" };
-
-// ✅ IMPORTANT: use SUPABASE_ANON_KEY here
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const $ = (id) => document.getElementById(id);
-
-const VIEWS = ["authView", "resetView", "menuView", "vehiclesView", "mileageView"];
-let selectedDateStr = yyyyMmDd(new Date());
-
-// ---------- helpers ----------
-function pad2(n) { return String(n).padStart(2, "0"); }
-function yyyyMmDd(d = new Date()) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
-function todayStr() { return yyyyMmDd(new Date()); }
-
-function parseDateStr(dateStr) {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y, m - 1, d, 12, 0, 0, 0);
-}
-function addDays(dateStr, delta) {
-  const dt = parseDateStr(dateStr);
-  dt.setDate(dt.getDate() + delta);
-  return yyyyMmDd(dt);
+:root{
+  --bg: #1FA8A8;
+  --bg2:#168C8C;
+  --text: #0b2f2f;
+  --muted: #6B8F8F;
+  --border: rgba(15, 55, 55, 0.14);
+  --primary: #1C7F7F;
+  --primary2:#166f6f;
+  --secondary: #CFEFED;
+  --mint: #8FE3CF;
+  --danger:#D96C6C;
+  --shadow: 0 12px 26px rgba(0,0,0,.18);
 }
 
-function showView(id, push = true) {
-  for (const v of VIEWS) {
-    const el = $(v);
-    if (el) el.classList.toggle("hidden", v !== id);
-  }
-  if (push) history.pushState({ view: id }, "", "#" + id);
+*{ box-sizing:border-box; }
+html,body{ height:100%; }
+body{
+  margin:0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  background:
+    radial-gradient(1200px 800px at 20% -10%, rgba(143,227,207,.55), transparent 60%),
+    radial-gradient(1000px 600px at 90% 0%, rgba(127,166,217,.25), transparent 55%),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+  color: var(--text);
+  display:flex;
+  align-items:flex-start;
+  justify-content:center;
+  padding:24px 14px 40px;
 }
-window.addEventListener("popstate", (e) => {
-  const view = e.state?.view || (location.hash ? location.hash.replace("#", "") : "menuView");
-  if (VIEWS.includes(view)) showView(view, false);
-});
+.hidden{ display:none !important; }
 
-function setAuthMsg(msg) { const el = $("authMsg"); if (el) el.textContent = msg || ""; }
-function setMileageMsg(msg) { const el = $("mileageMsg"); if (el) el.textContent = msg || ""; }
-function setVehicleMsg(msg) { const el = $("vehicleMsg"); if (el) el.textContent = msg || ""; }
-
-async function requireUser() {
-  const { data, error } = await sb.auth.getUser();
-  if (error || !data?.user) throw new Error("Not logged in.");
-  return data.user;
-}
-
-function numberOrNull(v) {
-  const n = Number(String(v ?? "").trim());
-  return Number.isFinite(n) ? n : null;
-}
-
-function setActiveVehicleId(id) {
-  if (id) localStorage.setItem(LS.activeVehicleId, id);
-  else localStorage.removeItem(LS.activeVehicleId);
-}
-function getActiveVehicleId() {
-  return localStorage.getItem(LS.activeVehicleId) || "";
+.card{
+  width:min(760px, 100%);
+  background: rgba(255,255,255,.92);
+  border: 1px solid rgba(255,255,255,.35);
+  border-radius: 22px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  padding: 18px;
 }
 
-function daysUntil(dateStr) {
-  if (!dateStr) return null;
-  const d = new Date(dateStr + "T00:00:00");
-  const now = new Date();
-  d.setHours(12,0,0,0); now.setHours(12,0,0,0);
-  return Math.round((d - now) / 86400000);
-}
-function fmtDue(label, dateStr) {
-  if (!dateStr) return "";
-  const du = daysUntil(dateStr);
-  if (du === null) return "";
-  if (du < 0) return `⚠ ${label} overdue (${Math.abs(du)}d)`;
-  if (du <= 7) return `⚠ ${label} due in ${du}d`;
-  if (du <= 30) return `${label} due in ${du}d`;
-  return "";
+.stack{ display:flex; flex-direction:column; gap:12px; }
+
+.page-title{
+  margin: 6px 0 4px;
+  text-align:center;
+  font-size: clamp(22px, 3.2vw, 32px);
+  letter-spacing: .4px;
 }
 
-// ---------- AUTH ----------
-async function doRegister() {
-  try {
-    const email = ($("email")?.value || "").trim();
-    const password = $("password")?.value || "";
-    const invite = ($("inviteCode")?.value || "").trim();
-
-    if (!email || !password) return setAuthMsg("Enter BOTH email and password.");
-    if (invite !== INVITE_CODE_REQUIRED) return setAuthMsg("Invite code required for registration.");
-
-    setAuthMsg("Registering…");
-    const res = await sb.auth.signUp({ email, password, options: { emailRedirectTo: SITE_URL } });
-    if (res.error) throw res.error;
-    setAuthMsg("Registered ✅ If email confirmation is enabled, confirm then login.");
-  } catch (err) {
-    setAuthMsg(err.message || String(err));
-  }
+.logoBox{ display:flex; justify-content:center; align-items:center; }
+.logoBox img{
+  width: min(520px, 100%);
+  border-radius: 14px;
+  border: 1px solid rgba(0,0,0,.06);
 }
 
-async function doLogin() {
-  try {
-    const email = ($("email")?.value || "").trim();
-    const password = $("password")?.value || "";
-    if (!email || !password) return setAuthMsg("Enter BOTH email and password.");
+label{ font-weight: 750; font-size: 14px; color: rgba(11,47,47,.9); }
 
-    setAuthMsg("Logging in…");
-    const res = await sb.auth.signInWithPassword({ email, password });
-    if (res.error) throw res.error;
+input, select, textarea{
+  width:100%;
+  border:1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 12px;
+  font-size: 16px;
+  outline:none;
+  background: rgba(255,255,255,.96);
+}
+textarea{ min-height: 84px; resize: vertical; }
 
-    setAuthMsg("");
-    await loadVehiclesEverywhere();
-    showView("menuView");
-  } catch (err) {
-    setAuthMsg(err.message || String(err));
-  }
+input:focus, select:focus, textarea:focus{
+  border-color: rgba(28,127,127,.55);
+  box-shadow: 0 0 0 4px rgba(143,227,207,.35);
 }
 
-async function doForgotPassword() {
-  try {
-    const email = ($("email")?.value || "").trim();
-    if (!email) return setAuthMsg("Enter your email first.");
+button{
+  width:100%;
+  border:none;
+  border-radius: 16px;
+  padding: 12px 14px;
+  font-size: 15px;
+  font-weight: 850;
+  cursor:pointer;
+  background: var(--primary);
+  color:#fff;
+}
+button:hover{ background: var(--primary2); }
+button:disabled{ opacity:.55; cursor:not-allowed; }
 
-    setAuthMsg("Sending reset email…");
-    const res = await sb.auth.resetPasswordForEmail(email, { redirectTo: SITE_URL });
-    if (res.error) throw res.error;
+.secondary{
+  background: var(--secondary);
+  color: rgba(11,47,47,.9);
+  border: 1px solid rgba(11,47,47,.10);
+}
+.secondary:hover{ background: rgba(207,239,237,.82); }
 
-    setAuthMsg("Reset email sent ✅ Check inbox/spam.");
-  } catch (err) {
-    setAuthMsg(err.message || String(err));
-  }
+.dangerBtn{ background: var(--danger); color:#fff; }
+.dangerBtn:hover{ filter: brightness(.95); }
+
+.muted{ color: var(--muted); font-size:14px; text-align:center; }
+
+.row{ display:flex; gap:12px; }
+.row > *{ flex:1; }
+
+.row3{ display:flex; gap:12px; }
+.row3 > *{ flex:1; }
+
+@media (max-width:720px){ .row,.row3{ flex-direction:column; } }
+
+.authRow{ display:flex; gap:10px; }
+.authRow button{ flex:1; }
+@media (max-width:620px){ .authRow{ flex-direction:column; } }
+
+.checkRow{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.checkRow input{ width:auto; }
+
+.dayBar{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(11,47,47,.10);
+  border-radius: 16px;
+  background: rgba(255,255,255,.75);
+}
+.dayBarLeft{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.miniBtn{
+  width:auto;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-weight: 900;
+}
+.datePick{
+  width:auto;
+  padding: 8px 10px;
+  border-radius: 999px;
 }
 
-function isRecoveryLink() { return (location.hash || "").includes("type=recovery"); }
+.menuGrid{
+  display:grid;
+  grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 12px;
+}
+@media (max-width:720px){ .menuGrid{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width:480px){ .menuGrid{ grid-template-columns: 1fr; } }
 
-async function setNewPassword() {
-  try {
-    const p1 = $("newPassword")?.value || "";
-    const p2 = $("newPassword2")?.value || "";
-    if (!p1 || p1.length < 6) return ($("resetMsg").textContent = "Password must be at least 6 characters.");
-    if (p1 !== p2) return ($("resetMsg").textContent = "Passwords do not match.");
-
-    $("resetMsg").textContent = "Updating password…";
-    const res = await sb.auth.updateUser({ password: p1 });
-    if (res.error) throw res.error;
-
-    $("resetMsg").textContent = "Password updated ✅ Please login.";
-    history.replaceState(null, "", location.pathname + location.search);
-    await sb.auth.signOut();
-    showView("authView");
-  } catch (err) {
-    $("resetMsg").textContent = err.message || String(err);
-  }
+.menuTile{
+  height: 72px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  border-radius: 18px;
+  box-shadow: 0 10px 18px rgba(0,0,0,.10);
 }
 
-async function doLogout() {
-  await sb.auth.signOut();
-  showView("authView");
+.sectionTitle{ margin: 4px 0 0; font-size:16px; font-weight:900; }
+
+ul{ list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:10px; }
+li{
+  border: 1px solid rgba(11,47,47,.10);
+  background: rgba(255,255,255,.88);
+  border-radius: 14px;
+  padding: 10px 12px;
+  line-height: 1.3;
 }
 
-// ---------- VEHICLES ----------
-async function fetchVehicles() {
-  const user = await requireUser();
-  const res = await sb.from("vehicles")
-    .select("*")
-    .eq("user_id", user.id)
-    .order("created_at", { ascending: true });
-  if (res.error) throw res.error;
-  return res.data || [];
+.badgeRow{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
 }
 
-async function loadVehiclesEverywhere() {
-  let vehicles = [];
-  try { vehicles = await fetchVehicles(); }
-  catch (err) { console.error(err); vehicles = []; }
-
-  // fill both selects
-  for (const sid of ["activeVehicleSelect", "mileageVehicleSelect"]) {
-    const sel = $(sid);
-    if (!sel) continue;
-    sel.innerHTML = vehicles.length
-      ? vehicles.map(v => `<option value="${v.id}">${v.registration}</option>`).join("")
-      : `<option value="">No vehicles yet</option>`;
-  }
-
-  // pick active
-  let active = getActiveVehicleId();
-  if (!vehicles.find(v => v.id === active)) active = vehicles[0]?.id || "";
-  setActiveVehicleId(active);
-
-  if ($("activeVehicleSelect")) $("activeVehicleSelect").value = active || "";
-  if ($("mileageVehicleSelect")) $("mileageVehicleSelect").value = active || "";
-
-  // due warnings
-  const dueBox = $("dueWarnings");
-  if (dueBox) {
-    const v = vehicles.find(x => x.id === active);
-    if (!v) dueBox.textContent = "Add a vehicle to start logging mileage.";
-    else {
-      const msgs = [fmtDue("MOT", v.mot_due_date), fmtDue("Tax", v.tax_due_date)].filter(Boolean);
-      dueBox.textContent = msgs.length ? msgs.join(" • ") : "No upcoming due dates in the next 30 days.";
-    }
-  }
-
-  renderVehicleList(vehicles);
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(143,227,207,.35);
+  border: 1px solid rgba(28,127,127,.18);
+  font-weight: 850;
+  font-size: 13px;
 }
 
-function clearVehicleForm() {
-  $("vehicleId").value = "";
-  $("registration").value = "";
-  $("motDue").value = "";
-  $("taxDue").value = "";
-  setVehicleMsg("");
+.kpiGrid{
+  display:grid;
+  grid-template-columns: repeat(4, minmax(0,1fr));
+  gap: 10px;
+}
+@media (max-width:720px){ .kpiGrid{ grid-template-columns: repeat(2, minmax(0,1fr)); } }
+.kpi{
+  border: 1px solid rgba(11,47,47,.10);
+  background: rgba(255,255,255,.82);
+  border-radius: 16px;
+  padding: 10px;
+  text-align:center;
+}
+.kpi .k{ font-size: 12px; color: var(--muted); font-weight: 800; }
+.kpi .v{ font-size: 18px; font-weight: 950; margin-top: 4px; }
+
+.photoThumb{
+  max-width: 140px;
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,.10);
 }
 
-async function saveVehicle() {
-  try {
-    const user = await requireUser();
-    const id = ($("vehicleId").value || "").trim();
-    const registration = ($("registration").value || "").trim().toUpperCase();
-    const mot_due_date = $("motDue").value || null;
-    const tax_due_date = $("taxDue").value || null;
-
-    if (!registration) return alert("Registration is required.");
-    setVehicleMsg("Saving…");
-
-    if (id) {
-      const res = await sb.from("vehicles")
-        .update({ registration, mot_due_date, tax_due_date })
-        .eq("id", id)
-        .eq("user_id", user.id);
-      if (res.error) throw res.error;
-    } else {
-      const res = await sb.from("vehicles")
-        .insert({ user_id: user.id, registration, mot_due_date, tax_due_date });
-      if (res.error) throw res.error;
-    }
-
-    setVehicleMsg("Saved ✅");
-    clearVehicleForm();
-    await loadVehiclesEverywhere();
-  } catch (err) {
-    console.error(err);
-    setVehicleMsg(err.message || String(err));
-  }
+.miniInlineBtn{
+  margin-left:10px;
+  width:auto !important;
+  display:inline-block !important;
+  padding:0 12px !important;
+  height:34px !important;
+  border-radius:999px !important;
+  font-weight:900 !important;
+  vertical-align:middle;
 }
-
-function renderVehicleList(vehicles) {
-  const ul = $("vehicleList");
-  if (!ul) return;
-
-  ul.innerHTML = "";
-  if (!vehicles.length) { setVehicleMsg("No vehicles yet."); return; }
-
-  for (const v of vehicles) {
-    const li = document.createElement("li");
-    li.innerHTML = `
-      <b>${v.registration}</b>
-      ${v.mot_due_date ? ` • MOT: ${v.mot_due_date}` : ""}
-      ${v.tax_due_date ? ` • Tax: ${v.tax_due_date}` : ""}
-      <button class="secondary miniInlineBtn" data-edit="${v.id}" type="button">Edit</button>
-      <button class="secondary miniInlineBtn" data-del="${v.id}" type="button">Delete</button>
-    `;
-    ul.appendChild(li);
-  }
-
-  ul.querySelectorAll("[data-edit]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const id = btn.getAttribute("data-edit");
-      const v = vehicles.find(x => x.id === id);
-      if (!v) return;
-      $("vehicleId").value = v.id;
-      $("registration").value = v.registration || "";
-      $("motDue").value = v.mot_due_date || "";
-      $("taxDue").value = v.tax_due_date || "";
-      setVehicleMsg("Editing…");
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    });
-  });
-
-  ul.querySelectorAll("[data-del]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const id = btn.getAttribute("data-del");
-      const v = vehicles.find(x => x.id === id);
-      if (!v) return;
-
-      if (!confirm(`Delete vehicle ${v.registration}?\n\nIf you have mileage logs for it, deletion may be blocked (on delete restrict).`)) return;
-
-      try {
-        const user = await requireUser();
-        const res = await sb.from("vehicles").delete().eq("id", id).eq("user_id", user.id);
-        if (res.error) throw res.error;
-
-        if (getActiveVehicleId() === id) setActiveVehicleId("");
-        await loadVehiclesEverywhere();
-        setVehicleMsg("Deleted ✅");
-      } catch (err) {
-        console.error(err);
-        setVehicleMsg(err.message || String(err));
-      }
-    });
-  });
-}
-
-// ---------- MILEAGE ----------
-function calcMileageTotal() {
-  const s = numberOrNull($("mileageStart").value);
-  const e = numberOrNull($("mileageEnd").value);
-  if (s === null || e === null || e < s) { $("mileageTotal").value = ""; return null; }
-  const t = Number((e - s).toFixed(1));
-  $("mileageTotal").value = String(t);
-  return t;
-}
-
-function setDate(newDate) {
-  if (newDate > todayStr()) newDate = todayStr();
-  selectedDateStr = newDate;
-  syncMileageDatePicker();
-  loadMileageForDate().catch(console.error);
-}
-
-function syncMileageDatePicker() {
-  const p = $("mileageDatePicker");
-  if (!p) return;
-  p.max = todayStr();
-  p.value = selectedDateStr;
-  $("mileageNext").disabled = (selectedDateStr >= todayStr());
-}
-
-async function upsertMileage() {
-  try {
-    const user = await requireUser();
-    const vehicle_id = $("mileageVehicleSelect").value;
-    if (!vehicle_id) return alert("Please add/select a vehicle first.");
-
-    const mileage_start = numberOrNull($("mileageStart").value);
-    const mileage_end = numberOrNull($("mileageEnd").value);
-    const mileage_total = calcMileageTotal();
-    const notes = ($("mileageNotes").value || "").trim() || null;
-
-    if (mileage_start === null || mileage_end === null) return alert("Enter valid start + end mileage.");
-    if (mileage_total === null) return alert("End mileage must be >= start mileage.");
-
-    setMileageMsg("Saving…");
-
-    const res = await sb.from("mileage_logs").upsert([{
-      user_id: user.id,
-      vehicle_id,
-      date: selectedDateStr,
-      mileage_start,
-      mileage_end,
-      mileage_total,
-      notes
-    }], { onConflict: "user_id,vehicle_id,date" });
-
-    if (res.error) throw res.error;
-
-    setMileageMsg("Saved ✅");
-    await loadMileageForDate();
-  } catch (err) {
-    console.error(err);
-    setMileageMsg(err.message || String(err));
-  }
-}
-
-async function deleteMileageForSelection() {
-  try {
-    const user = await requireUser();
-    const vehicle_id = $("mileageVehicleSelect").value;
-    if (!vehicle_id) return;
-    if (!confirm("Delete mileage entry for this vehicle + date?")) return;
-
-    const res = await sb.from("mileage_logs")
-      .delete()
-      .eq("user_id", user.id)
-      .eq("vehicle_id", vehicle_id)
-      .eq("date", selectedDateStr);
-
-    if (res.error) throw res.error;
-
-    $("mileageStart").value = "";
-    $("mileageEnd").value = "";
-    $("mileageTotal").value = "";
-    $("mileageNotes").value = "";
-    setMileageMsg("Deleted ✅");
-    await loadMileageForDate();
-  } catch (err) {
-    console.error(err);
-    setMileageMsg(err.message || String(err));
-  }
-}
-
-async function loadMileageForDate() {
-  const ul = $("mileageList");
-  if (!ul) return;
-
-  setMileageMsg("Loading…");
-  const user = await requireUser();
-  const vehicle_id = $("mileageVehicleSelect").value || "";
-
-  const res = await sb.from("mileage_logs")
-    .select("vehicle_id,date,mileage_start,mileage_end,mileage_total,notes,created_at,vehicles(registration)")
-    .eq("user_id", user.id)
-    .eq("date", selectedDateStr)
-    .order("created_at", { ascending: false });
-
-  if (res.error) throw res.error;
-  const rows = res.data || [];
-
-  // Fill form from selected vehicle entry if it exists
-  const current = rows.find(r => r.vehicle_id === vehicle_id);
-  if (current) {
-    $("mileageStart").value = current.mileage_start ?? "";
-    $("mileageEnd").value = current.mileage_end ?? "";
-    $("mileageTotal").value = current.mileage_total ?? "";
-    $("mileageNotes").value = current.notes ?? "";
-  } else {
-    $("mileageStart").value = "";
-    $("mileageEnd").value = "";
-    $("mileageTotal").value = "";
-    $("mileageNotes").value = "";
-  }
-
-  ul.innerHTML = "";
-  if (!rows.length) { setMileageMsg("No logs saved for this date yet."); return; }
-
-  setMileageMsg("");
-  for (const r of rows) {
-    const reg = r.vehicles?.registration || "Vehicle";
-    const notes = r.notes ? ` • ${r.notes}` : "";
-    const li = document.createElement("li");
-    li.innerHTML = `<b>${reg}</b> • ${r.mileage_start} → ${r.mileage_end} • <b>${Number(r.mileage_total).toFixed(1)} mi</b>${notes}`;
-    ul.appendChild(li);
-  }
-}
-
-// ---------- init ----------
-(function injectMiniInlineBtnCSS() {
-  const s = document.createElement("style");
-  s.textContent = `.miniInlineBtn{margin-left:10px;width:auto!important;display:inline-block!important;padding:0 12px!important;height:34px!important;border-radius:999px!important;font-weight:900!important;vertical-align:middle;}`;
-  document.head.appendChild(s);
-})();
-
-async function init() {
-  // auth
-  $("btnLogin").onclick = doLogin;
-  $("btnRegister").onclick = doRegister;
-  $("btnForgot").onclick = doForgotPassword;
-  $("btnSetNewPassword").onclick = setNewPassword;
-
-  // menu
-  $("btnLogout").onclick = doLogout;
-  $("goMileage").onclick = async () => { showView("mileageView"); await loadVehiclesEverywhere(); syncMileageDatePicker(); await loadMileageForDate(); };
-  $("goVehicles").onclick = async () => { showView("vehiclesView"); await loadVehiclesEverywhere(); };
-  $("btnManageVehicles").onclick = async () => { showView("vehiclesView"); await loadVehiclesEverywhere(); };
-
-  // back buttons
-  $("vehiclesBack").onclick = () => showView("menuView");
-  $("mileageBack").onclick = () => showView("menuView");
-
-  // vehicles actions
-  $("btnSaveVehicle").onclick = saveVehicle;
-  $("btnClearVehicle").onclick = clearVehicleForm;
-
-  // vehicle selects
-  $("activeVehicleSelect").onchange = async (e) => {
-    setActiveVehicleId(e.target.value);
-    await loadVehiclesEverywhere();
-  };
-  $("mileageVehicleSelect").onchange = async (e) => {
-    setActiveVehicleId(e.target.value);
-    $("activeVehicleSelect").value = e.target.value;
-    await loadVehiclesEverywhere();
-    await loadMileageForDate();
-  };
-
-  // mileage date bar
-  $("mileagePrev").onclick = () => setDate(addDays(selectedDateStr, -1));
-  $("mileageNext").onclick = () => setDate(addDays(selectedDateStr, +1));
-  $("mileageDatePicker").onchange = (e) => setDate(e.target.value);
-
-  // mileage actions
-  $("mileageStart").addEventListener("input", calcMileageTotal);
-  $("mileageEnd").addEventListener("input", calcMileageTotal);
-  $("btnSaveMileage").onclick = upsertMileage;
-  $("btnDeleteMileage").onclick = deleteMileageForSelection;
-
-  // initial view
-  if (isRecoveryLink()) {
-    showView("resetView", false);
-  } else {
-    const s = await sb.auth.getSession();
-    showView(s.data?.session ? "menuView" : "authView", false);
-    if (s.data?.session) await loadVehiclesEverywhere();
-  }
-
-  selectedDateStr = todayStr();
-  syncMileageDatePicker();
-}
-
-init().catch((e) => { console.error(e); alert(e.message || String(e)); });
