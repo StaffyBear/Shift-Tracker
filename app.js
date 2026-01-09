@@ -5,14 +5,14 @@
  **************************************************/
 
 // ✅ Fill these in:
-const SITE_URL = "https://staffybear.github.io/Shift-Tracker/"; // e.g. https://staffybear.github.io/Working-Hours-Tracker/
+const SITE_URL = "https://staffybear.github.io/Shift-Tracker/"; // must end with /
 const SUPABASE_URL = "https://qntswiybgqijbbhpzpas.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_JW0SqP8JbZFsgVfpPevHrg__FeyrIgq";
 
 // Optional: invite code gate for registration
 const INVITE_CODE_REQUIRED = "1006";
 
-// Storage bucket for photos (create this in Supabase Storage)
+// Storage bucket for photos (create in Supabase Storage)
 const PHOTO_BUCKET = "shift-photos";
 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -60,8 +60,18 @@ function hoursBetween(start, end){
   return ms / 3600000;
 }
 function numberOrNull(v){
-  const n = Number(String(v ?? "").trim());
+  const s = String(v ?? "").trim();
+  if (s === "") return null;
+  const n = Number(s);
   return Number.isFinite(n) ? n : null;
+}
+function escapeHtml(s){
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
 }
 
 function showView(id, push=true){
@@ -75,7 +85,6 @@ window.addEventListener("popstate", (e) => {
   const view = e.state?.view || (location.hash ? location.hash.replace("#","") : "menuView");
   if (VIEWS.includes(view)) showView(view, false);
 });
-
 function setText(id, msg){ const el=$(id); if (el) el.textContent = msg || ""; }
 
 async function requireUser(){
@@ -84,21 +93,12 @@ async function requireUser(){
   return data.user;
 }
 
-function escapeHtml(s){
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-
 /* ---------------- auth ---------------- */
 async function doRegister(){
   try{
-    const email = ($("email").value || "").trim();
-    const password = $("password").value || "";
-    const invite = ($("inviteCode").value || "").trim();
+    const email = ($("email")?.value || "").trim();
+    const password = $("password")?.value || "";
+    const invite = ($("inviteCode")?.value || "").trim();
 
     if (!email || !password) return setText("authMsg","Enter BOTH email and password.");
     if (invite !== INVITE_CODE_REQUIRED) return setText("authMsg","Invite code required for registration.");
@@ -113,8 +113,8 @@ async function doRegister(){
 }
 async function doLogin(){
   try{
-    const email = ($("email").value || "").trim();
-    const password = $("password").value || "";
+    const email = ($("email")?.value || "").trim();
+    const password = $("password")?.value || "";
     if (!email || !password) return setText("authMsg","Enter BOTH email and password.");
 
     setText("authMsg","Logging in…");
@@ -129,7 +129,7 @@ async function doLogin(){
 }
 async function doForgotPassword(){
   try{
-    const email = ($("email").value || "").trim();
+    const email = ($("email")?.value || "").trim();
     if (!email) return setText("authMsg","Enter your email first.");
 
     setText("authMsg","Sending reset email…");
@@ -144,8 +144,8 @@ async function doForgotPassword(){
 function isRecoveryLink(){ return (location.hash || "").includes("type=recovery"); }
 async function setNewPassword(){
   try{
-    const p1 = $("newPassword").value || "";
-    const p2 = $("newPassword2").value || "";
+    const p1 = $("newPassword")?.value || "";
+    const p2 = $("newPassword2")?.value || "";
     if (!p1 || p1.length < 6) return setText("resetMsg","Password must be at least 6 characters.");
     if (p1 !== p2) return setText("resetMsg","Passwords do not match.");
 
@@ -176,7 +176,6 @@ async function listCompanies(){
   if (res.error) throw res.error;
   return res.data || [];
 }
-
 function companyConfigFromForm(){
   return {
     uses_mileage: $("cfgMileage").checked,
@@ -195,7 +194,6 @@ function setCompanyForm(c){
   $("cfgPay").checked = c?.uses_pay ?? true;
   $("cfgPhotos").checked = c?.uses_photos ?? true;
 }
-
 async function saveCompany(){
   try{
     const user = await requireUser();
@@ -280,11 +278,8 @@ async function refreshCompaniesUI(){
   if (!companies.length) setText("menuMsg","Add a company (e.g. Evri) to get a tile.");
   else setText("menuMsg","");
 }
-
 function renderCompanyTiles(companies){
   const grid = $("menuGrid");
-
-  // remove old company tiles
   [...grid.querySelectorAll("button[data-company]")].forEach(b=>b.remove());
 
   for (const c of companies){
@@ -297,7 +292,7 @@ function renderCompanyTiles(companies){
   }
 }
 
-/* ---------------- shifts ---------------- */
+/* ---------------- shifts (by company + date) ---------------- */
 async function fetchShift(companyId, dateStr){
   const user = await requireUser();
   const res = await sb.from("shifts")
@@ -309,24 +304,20 @@ async function fetchShift(companyId, dateStr){
   if (res.error && res.status !== 406) throw res.error;
   return res.data || null;
 }
-
 async function upsertShift(companyId, dateStr, payload){
   const user = await requireUser();
   const row = { user_id:user.id, company_id:companyId, work_date:dateStr, ...payload };
   const res = await sb.from("shifts").upsert([row], { onConflict:"user_id,company_id,work_date" });
   if (res.error) throw res.error;
 }
-
 async function deleteShift(companyId, dateStr){
   const user = await requireUser();
-  const res = await sb.from("shifts")
-    .delete()
+  const res = await sb.from("shifts").delete()
     .eq("user_id", user.id)
     .eq("company_id", companyId)
     .eq("work_date", dateStr);
   if (res.error) throw res.error;
 }
-
 async function listCompanyMonth(companyId, monthDate){
   const user = await requireUser();
   const { start, end } = monthRange(monthDate);
@@ -346,7 +337,6 @@ async function uploadPhoto(file, path){
   if (!file) return null;
   const user = await requireUser();
   const fullPath = `${user.id}/${path}`;
-
   const res = await sb.storage.from(PHOTO_BUCKET).upload(fullPath, file, {
     cacheControl: "3600",
     upsert: true,
@@ -355,10 +345,9 @@ async function uploadPhoto(file, path){
   if (res.error) throw res.error;
   return fullPath;
 }
-
 async function signedUrl(path){
   if (!path) return null;
-  const res = await sb.storage.from(PHOTO_BUCKET).createSignedUrl(path, 60 * 60);
+  const res = await sb.storage.from(PHOTO_BUCKET).createSignedUrl(path, 60*60);
   if (res.error) throw res.error;
   return res.data?.signedUrl || null;
 }
@@ -369,27 +358,20 @@ function applyCompanyConfig(c){
   $("parcelsStopsBlock").classList.toggle("hidden", !(c.uses_parcels || c.uses_stops));
   $("payBlock").classList.toggle("hidden", !c.uses_pay);
   $("photoBlock").classList.toggle("hidden", !(c.uses_mileage && c.uses_photos));
-
   $("parcelsWrap").classList.toggle("hidden", !c.uses_parcels);
   $("stopsWrap").classList.toggle("hidden", !c.uses_stops);
-
   $("mileageBadgeWrap").classList.toggle("hidden", !c.uses_mileage);
   $("payRateBadgeWrap").classList.toggle("hidden", !c.uses_pay);
 }
-
 function syncShiftDatePicker(){
   $("shiftDatePicker").max = todayStr();
   $("shiftDatePicker").value = selectedDateStr;
   $("shiftNext").disabled = (selectedDateStr >= todayStr());
 }
-
 function calcMileage(){
   const s = numberOrNull($("startMileage").value);
   const e = numberOrNull($("endMileage").value);
-  if (s === null || e === null || e < s){
-    $("totalMileage").value = "";
-    return null;
-  }
+  if (s === null || e === null || e < s){ $("totalMileage").value=""; return null; }
   const t = Number((e - s).toFixed(1));
   $("totalMileage").value = String(t);
   return t;
@@ -409,16 +391,12 @@ function calcPayPerHour(){
 function refreshBadges(){
   const hours = calcHours();
   $("hoursBadge").textContent = hours === null ? "—" : String(hours);
-
   const mileage = calcMileage();
   $("mileageBadge").textContent = mileage === null ? "—" : String(mileage);
-
   const rate = calcPayPerHour();
   $("payRateBadge").textContent = rate === null ? "—" : String(rate);
-
   $("avgPayPerHour").value = rate === null ? "" : String(rate);
 }
-
 function clearShiftForm(){
   $("startTime").value = "";
   $("endTime").value = "";
@@ -430,15 +408,12 @@ function clearShiftForm(){
   $("estimatedPay").value = "";
   $("avgPayPerHour").value = "";
   $("notes").value = "";
-
   $("startMileagePhoto").value = "";
   $("endMileagePhoto").value = "";
   $("startPhotoThumb").classList.add("hidden"); $("startPhotoThumb").src = "";
   $("endPhotoThumb").classList.add("hidden"); $("endPhotoThumb").src = "";
-
   refreshBadges();
 }
-
 async function loadShiftIntoForm(){
   setText("shiftMsg","Loading…");
   clearShiftForm();
@@ -448,14 +423,11 @@ async function loadShiftIntoForm(){
 
   if (row.start_time) $("startTime").value = toLocalDateTimeInputValue(new Date(row.start_time));
   if (row.end_time) $("endTime").value = toLocalDateTimeInputValue(new Date(row.end_time));
-
   $("startMileage").value = row.start_mileage ?? "";
   $("endMileage").value = row.end_mileage ?? "";
   $("totalMileage").value = row.total_mileage ?? "";
-
   $("totalParcels").value = row.total_parcels ?? "";
   $("totalStops").value = row.total_stops ?? "";
-
   $("estimatedPay").value = row.estimated_pay ?? "";
   $("notes").value = row.notes ?? "";
 
@@ -470,16 +442,16 @@ async function loadShiftIntoForm(){
       if (url){ $("endPhotoThumb").src = url; $("endPhotoThumb").classList.remove("hidden"); }
     }
   }catch(err){
-    console.warn("Photo preview unavailable:", err.message || err);
+    console.warn("Photo preview unavailable:", err?.message || err);
   }
 
   refreshBadges();
   setText("shiftMsg","");
 }
-
 async function saveShift(){
   try{
     setText("shiftMsg","Saving…");
+
     const startDt = fromLocalDateTimeInputValue($("startTime").value);
     if (!startDt) return setText("shiftMsg","Start time is required. Use Start shift or set it manually.");
 
@@ -497,6 +469,8 @@ async function saveShift(){
     let start_mileage_photo_path = null;
     let end_mileage_photo_path = null;
 
+    const existing = await fetchShift(selectedCompanyId, selectedDateStr);
+
     if (selectedCompany.uses_mileage && selectedCompany.uses_photos){
       const startFile = $("startMileagePhoto").files?.[0] || null;
       const endFile = $("endMileagePhoto").files?.[0] || null;
@@ -504,19 +478,14 @@ async function saveShift(){
       if (endFile) end_mileage_photo_path = await uploadPhoto(endFile, `${selectedCompanyId}/${selectedDateStr}/end-${Date.now()}.jpg`);
     }
 
-    const existing = await fetchShift(selectedCompanyId, selectedDateStr);
-
     await upsertShift(selectedCompanyId, selectedDateStr, {
       start_time: startDt.toISOString(),
       end_time: endDt ? endDt.toISOString() : null,
-
       start_mileage,
       end_mileage,
       total_mileage,
-
       start_mileage_photo_path: start_mileage_photo_path ?? existing?.start_mileage_photo_path ?? null,
       end_mileage_photo_path: end_mileage_photo_path ?? existing?.end_mileage_photo_path ?? null,
-
       total_parcels,
       total_stops,
       estimated_pay,
@@ -528,10 +497,9 @@ async function saveShift(){
     await renderCompanyMonthList();
   }catch(err){
     console.error(err);
-    setText("shiftMsg", err.message || String(err));
+    setText("shiftMsg", err?.message || String(err));
   }
 }
-
 function startShiftNow(){
   $("startTime").value = toLocalDateTimeInputValue(new Date());
   refreshBadges();
@@ -542,7 +510,6 @@ function endShiftNow(){
   refreshBadges();
   setText("shiftMsg","End time set. Tap Save when ready.");
 }
-
 async function deleteDay(){
   try{
     if (!confirm("Delete saved shift for this date?")) return;
@@ -551,14 +518,12 @@ async function deleteDay(){
     setText("shiftMsg","Deleted ✅");
     await renderCompanyMonthList();
   }catch(err){
-    setText("shiftMsg", err.message || String(err));
+    setText("shiftMsg", err?.message || String(err));
   }
 }
-
 async function renderCompanyMonthList(){
   const ul = $("companyMonthList");
   ul.innerHTML = "";
-
   const rows = await listCompanyMonth(selectedCompanyId, monthCursor);
   if (!rows.length) return;
 
@@ -574,7 +539,6 @@ async function renderCompanyMonthList(){
     ul.appendChild(li);
   }
 }
-
 async function openCompany(companyId){
   const companies = await listCompanies();
   const c = companies.find(x=>x.id===companyId);
@@ -609,7 +573,6 @@ async function listShiftsInMonth(monthDate){
   if (res.error) throw res.error;
   return res.data || [];
 }
-
 async function renderMonthly(){
   $("monthLabel").textContent = monthLabel(monthCursor);
   $("monthNext").disabled = (monthCursor >= startOfMonth(new Date()));

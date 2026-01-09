@@ -186,7 +186,82 @@
           <label for="endMileage">End mileage</label>
           <input id="endMileage" inputmode="decimal" placeholder="e.g. 10310.2" />
         </div>
-        <div class="sta
+        <div class="stack">
+          <label>Total mileage</label>
+          <input id="totalMileage" disabled />
+        </div>
+      </div>
 
-          <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./app.js"></script>
+      <div id="photoBlock" class="stack">
+        <div class="row">
+          <div class="stack">
+            <label for="startMileagePhoto">Start mileage photo</label>
+            <input id="startMileagePhoto" type="file" accept="image/*" capture="environment" />
+            <img id="startPhotoThumb" class="photoThumb hidden" alt="Start photo preview" />
+          </div>
+          <div class="stack">
+            <label for="endMileagePhoto">End mileage photo</label>
+            <input id="endMileagePhoto" type="file" accept="image/*" capture="environment" />
+            <img id="endPhotoThumb" class="photoThumb hidden" alt="End photo preview" />
+          </div>
+        </div>
+        <div class="muted">Photos optional. Bucket: <b>shift-photos</b></div>
+      </div>
+    </div>
+
+    <!-- Parcels/Stops -->
+    <div id="parcelsStopsBlock" class="stack">
+      <h3 class="sectionTitle">Work stats</h3>
+      <div class="row">
+        <div class="stack" id="parcelsWrap">
+          <label for="totalParcels">Total parcels</label>
+          <input id="totalParcels" inputmode="numeric" placeholder="(optional)" />
+        </div>
+        <div class="stack" id="stopsWrap">
+          <label for="totalStops">Total stops</label>
+          <input id="totalStops" inputmode="numeric" placeholder="(optional)" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Pay -->
+    <div id="payBlock" class="stack">
+      <h3 class="sectionTitle">Pay</h3>
+      <div class="row">
+        <div class="stack">
+          <label for="estimatedPay">Estimated pay (£)</label>
+          <input id="estimatedPay" inputmode="decimal" placeholder="(add next day)" />
+        </div>
+        <div class="stack">
+          <label>Average £/hour</label>
+          <input id="avgPayPerHour" disabled />
+        </div>
+      </div>
+    </div>
+
+    <label for="notes">Notes</label>
+    <textarea id="notes" placeholder="Anything worth noting..."></textarea>
+
+    <div class="row">
+      <button id="btnSaveShift">Save</button>
+      <button id="btnDeleteShift" class="secondary">Delete day</button>
+    </div>
+
+    <h3 class="sectionTitle">Shifts for this company (selected month)</h3>
+    <ul id="companyMonthList"></ul>
+    <div id="shiftMsg" class="muted"></div>
+  </section>
+
+  <!-- Supabase (global build) MUST load BEFORE app.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./app.js"></script>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(console.error);
+      });
+    }
+  </script>
+</body>
+</html>

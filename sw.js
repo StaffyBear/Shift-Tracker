@@ -1,5 +1,5 @@
 // sw.js — offline shell cache
-const CACHE_NAME = "shift-tracker-v1";
+const CACHE_NAME = "working-hours-tracker-v1";
 const ASSETS = [
   "./",
   "./index.html",
